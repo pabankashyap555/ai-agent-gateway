@@ -1,0 +1,34 @@
+# Demo overlay: lets the gateway run on the same laptop as AiSOC.
+#
+# AiSOC already publishes 8080 (enrichment), 8081 (ingest) and 8090 (kafka-ui),
+# which collide with the gateway's MCP plane, control plane and Adminer.
+# This moves the gateway's host ports up by 10000. Only the host side moves;
+# nothing inside the stack changes.
+#
+#   MCP plane      http://localhost:18080/mcp
+#   Console + API  http://localhost:18081
+#   LLM plane      http://localhost:18082
+#   Adminer        http://localhost:18090  (analytics profile only)
+#
+# It also shortens the failed-auth lockout from 5 minutes to 30 seconds, so
+# the brute-force step in demo/attack_sim.sh does not lock you out of your
+# own demo for long. Everything else is the shipped default.
+#
+# Use (from the repo root):
+#   docker compose -f deploy/docker-compose.yml -f demo/docker-compose.demo-ports.yml up --build -d
+#
+# `!override` needs Docker Compose v2.24 or newer; without it compose would
+# ADD these ports to the originals instead of replacing them.
+
+services:
+  gateway:
+    ports: !override
+      - "127.0.0.1:18080:8080" # mcp plane
+      - "127.0.0.1:18081:8081" # control plane: REST API + console
+      - "127.0.0.1:18082:8082" # llm plane
+    environment:
+      GATEWAY_AUTH_RATE_LIMIT_LOCKOUT: 30s
+
+  adminer:
+    ports: !override
+      - "127.0.0.1:18090:8080"

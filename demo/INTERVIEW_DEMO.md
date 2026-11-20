@@ -63,12 +63,16 @@ until curl -sf localhost:18081/api/v1/health >/dev/null; do sleep 2; done && ech
 
 `demo/docker-compose.demo-ports.yml` moves the gateway to **18080/18081/18082** because AiSOC already uses 8080, 8081 and 8090. (On an 8 GB laptop, drop the `GATEWAY_SINKS_CLICKHOUSE_ENABLED=true` and `--profile analytics` parts; you lose only the access-log step.)
 
-Create a console user (prints a one-time password you change on first login):
+Create the tenant and an admin API key first (prints the key once, so save it), then a console user (prints a one-time password you change on first login):
 
 ```bash
+export GATEWAY_ADMIN_KEY="$(docker compose -f deploy/docker-compose.yml -f demo/docker-compose.demo-ports.yml exec -T gateway /gateway bootstrap-key)"
+echo "$GATEWAY_ADMIN_KEY"     # save this key somewhere safe
 docker compose -f deploy/docker-compose.yml -f demo/docker-compose.demo-ports.yml \
   exec gateway /gateway create-user -tenant default -username admin -role admin
 ```
+
+Keep that terminal open: `demo/attack_sim.sh` reuses `GATEWAY_ADMIN_KEY` from it. In a new terminal, run `export GATEWAY_ADMIN_KEY=<the key you saved>` first.
 
 Console: **http://localhost:18081**
 

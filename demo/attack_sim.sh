@@ -7,7 +7,7 @@
 #
 #   1  No credentials on the MCP plane                       -> expect 401
 #   2  Forged / guessed API key                               -> expect 401
-#   3  Compromised agent key tries admin actions              -> expect 403
+#   3  Compromised agent key tries admin actions              -> expect 403 (reads are allowed by design: a finding)
 #   4  Prompt-injected agent calls a tool it was not granted  -> expect -32003
 #   5  Agent spoofs a more powerful profile header            -> expect -32003
 #   6  Misconfiguration: unbound key, no profile header       -> ALLOWED (the risk), then fixed
@@ -62,7 +62,7 @@ if [[ -t 1 ]]; then
 else
   B=""; R=""; G=""; Y=""; C=""; N=""
 fi
-HELD=0; FAILED=0
+HELD=0; FAILED=0; FINDINGS=0
 step()    { echo; echo "${B}${C}== $* ==${N}"; }
 attack()  { echo "  ${Y}attacker:${N} $*"; }
 held()    { echo "  ${G}BLOCKED${N}  $*"; HELD=$((HELD + 1)); }
@@ -90,12 +90,15 @@ mcp() {
 
   local init out
   init='{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"rogue-agent-demo","version":"1.0"}}}'
-  out="$(curl "${common[@]}" ${auth[@]+"${auth[@]}"} ${prof[@]+"${prof[@]}"} -D "$hdrs" -w '\n%{http_code}' -d "$init" "$MCP_URL")"
+  # The handshake carries only the key; the profile header (honest or spoofed)
+  # rides the request under test, so a refusal is attributed to that request.
+  out="$(curl "${common[@]}" ${auth[@]+"${auth[@]}"} -D "$hdrs" -w '\n%{http_code}' -d "$init" "$MCP_URL")"
   MCP_HTTP="${out##*$'\n'}"; MCP_BODY="${out%$'\n'*}"
   if [[ "$MCP_HTTP" != "200" ]]; then rm -f "$hdrs"; return 0; fi
 
   local sid
-  sid="$(grep -i '^Mcp-Session-Id:' "$hdrs" | tail -n1 | sed -E 's/^[^:]+:[[:space:]]*//' | tr -d '\r\n')"
+  sid="$(grep -i '^Mcp-Session-Id:' "$hdrs" | tail -n1 | sed -E 's/^[^:]+:[[:space:]]*//' | tr -d '\r\n' || true)"
+  if [[ -z "$sid" ]] || jq -e '.error' >/dev/null 2>&1 <<<"$MCP_BODY"; then rm -f "$hdrs"; return 0; fi
   rm -f "$hdrs"
   curl "${common[@]}" ${auth[@]+"${auth[@]}"} -H "Mcp-Session-Id: $sid" -o /dev/null \
     -d '{"jsonrpc":"2.0","method":"notifications/initialized"}' "$MCP_URL"
@@ -205,9 +208,17 @@ step "3. Stolen agent key used for privilege escalation"
 attack "uses the support-bot's key to mint itself an admin key on the control plane"
 api POST /api-keys "$BOT_KEY" '{"name":"backdoor","role":"admin"}'
 if [[ "$API_HTTP" == "403" ]]; then held "HTTP 403 - agent-role keys cannot touch the control plane"; else broke "HTTP $API_HTTP $API_BODY"; fi
-attack "tries to list connectors (and the credentials wired into them)"
+attack "tries to read the gateway's configuration (list of connectors)"
 api GET /connectors "$BOT_KEY"
-if [[ "$API_HTTP" == "403" ]]; then held "HTTP 403"; else broke "HTTP $API_HTTP"; fi
+if [[ "$API_HTTP" == "403" ]]; then
+  held "HTTP 403"
+elif [[ "$API_HTTP" == "200" ]]; then
+  echo "  ${Y}ALLOWED (by design)${N}  HTTP 200 - the built-in agent role includes *.read (read-only; secret header values come back masked)"
+  note "finding: a stolen agent key can map connectors and endpoints. Hardening: a custom role with only mcp.* (auth.roles)"
+  FINDINGS=$((FINDINGS + 1))
+else
+  broke "HTTP $API_HTTP"
+fi
 pause
 
 # ---------------------------------------------------------------------------
@@ -307,7 +318,7 @@ fi
 echo
 echo "${B}================================================================${N}"
 echo "${B}Result: ${G}${HELD} controls held${N}${B}, ${R}${FAILED} failed${N}"
-echo "${B}Plus one misconfiguration demonstrated and fixed (step 6).${N}"
+echo "${B}Findings: ${FINDINGS} by-design read access (step 3), plus one misconfiguration demonstrated and fixed (step 6).${N}"
 echo "Console: http://localhost:${API_PORT}   (log in, then Access Logs / API Keys / Profiles)"
 echo "Stop the tool server: kill \$(cat demo/.toolserver.pid)"
 echo "${B}================================================================${N}"

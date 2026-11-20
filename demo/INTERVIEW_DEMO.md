@@ -5,7 +5,7 @@ Two open-source tools, one laptop, two attack simulations:
 | Tool | What it is | What the simulation shows |
 |---|---|---|
 | **AiSOC** (`beenuar/AiSOC`) | AI Security Operations Center: ingests telemetry, runs detection rules, correlates alerts, AI triage | A 7-stage intrusion ("Operation Paper Trail") going in as raw logs and coming out as **11 rule-based detections**, mapped to MITRE ATT&CK, with a benign event that correctly stays quiet |
-| **AI Agent Gateway** (`Tuskira/ai-agent-gateway`) | One authenticated, logged choke point between AI agents and their tools (MCP) and models | A "rogue agent" trying 9 attacks (stolen key, prompt-injected tool call, profile spoofing, SSRF to cloud metadata, brute force). **12 controls hold**, plus one real misconfiguration shown and fixed |
+| **AI Agent Gateway** (`Tuskira/ai-agent-gateway`) | One authenticated, logged choke point between AI agents and their tools (MCP) and models | A "rogue agent" trying 9 attacks (stolen key, prompt-injected tool call, profile spoofing, SSRF to cloud metadata, brute force). **11 controls hold**, plus two findings: agent keys can read configuration by design, and an unbound key can use every tool (shown and fixed) |
 
 Everything runs locally. No real attacks are executed: the AiSOC simulation sends *log events that describe* an attack (made-up hosts, documentation IP ranges), and the gateway simulation only talks to the gateway and a local reference tool server.
 
@@ -133,7 +133,7 @@ Setup: a tool server (the official MCP reference server, which includes a danger
 |---|---|---|---|
 | 1 | Call the MCP plane with no key | 401 | Every agent request is authenticated |
 | 2 | Forged key | 401 | |
-| 3 | Stolen agent key tries to mint an admin key / read connectors | 403, 403 | Agent role ≠ admin role: a leaked agent key can't escalate |
+| 3 | Stolen agent key tries to mint an admin key, then to read the connector list | 403, then 200 (by design) | A leaked agent key can't escalate to admin. But the built-in agent role includes `*.read`, so it *can* map the configuration (secret values are masked). Hardening: a custom role with only `mcp.*` via `auth.roles` |
 | 4 | Prompt-injected agent calls `get-env` | JSON-RPC -32003 | Tool scoping is enforced on **every call**, not just hidden from the list. This is the core defence against prompt injection turning into data theft |
 | 5 | Agent sends `X-Agent-Profile-Name: ops-admin` | -32003 | A bound key can't pick a stronger profile |
 | 6 | **Unbound** legacy key, no profile header → `get-env` **succeeds**. Then bind the key → blocked immediately | ALLOWED, then -32003 | A real finding: scoping is opt-in by default (`mcp.require_profile=false`). Recommend binding every agent key and turning on `require_profile` |

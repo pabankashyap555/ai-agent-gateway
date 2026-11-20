@@ -128,6 +128,33 @@ Then, in the gateway terminal, run the attacks with the burst option so the high
 
 Within about a minute the bridge prints what it sent, and AiSOC's **Alerts** page shows the gateway alerts (source: AI Runtime / AI Guardrail), grouped per agent and triaged by the AI like any other alert. SSRF attempts (step 7) are refused on the gateway's control plane and are not in the access log, so they are not forwarded.
 
+## 4c. A real AI agent: route Claude Code through the gateway into AiSOC
+
+Two paths, because the gateway only sees what passes through it:
+
+| What Claude Code does | Path | Lands in AiSOC as | Alerts |
+|---|---|---|---|
+| Calls an MCP tool | Gateway MCP plane (`:18080`, profile `claude-code`: echo + get-sum only) → bridge | `ai_runtime` tool call | Refusals: AI Agent Tool Call Denied; 10+ in 5 min: repeatedly denied |
+| Calls the model | Gateway LLM plane (`:18082`, `ANTHROPIC_BASE_URL`) → bridge | `ai_runtime` model call (model, tokens, cost, session) | With `APPROVED_MODELS` set: **AI Agent Used an Unapproved Model** (`det-application-082`) |
+| Runs Bash, reads or edits files (built-in tools, never touch the gateway) | Claude Code's own OpenTelemetry events → AiSOC OTLP receiver (`:8081/v1/logs`) | Process Activity events (`tool_result`, `tool_decision`, `user_prompt`, `api_request`), searchable | None out of the box: AiSOC has no rule for Claude Code's event fields yet |
+
+AiSOC's receiver takes OpenTelemetry **logs**, not traces, so Claude Code's (beta) traces are not sent.
+
+```bash
+cd /workspaces/AiSOC && git pull                     # brings demo/docker-compose.otlp.yml
+cd /workspaces/ai-agent-gateway && git pull
+./demo/setup_claude_code.sh                           # profile + bound key, MCP registration, AiSOC OTLP on, writes demo/claude-code.env
+APPROVED_MODELS=claude-sonnet,claude-opus ./demo/run_bridge.sh   # in its own terminal (restart it if already running)
+source demo/claude-code.env && claude                # first run: log in with your Claude account or an API key
+```
+
+Things to ask Claude Code, and where each shows up:
+- "Use the echo tool to say hello" → gateway Access Logs, then AiSOC (allowed tool call)
+- "Use the get-env tool" → Claude Code can't even see it (the profile hides it); `claude mcp list` / `/mcp` shows only echo and get-sum
+- any question at all → gateway LLM Logs (tokens, cost), then AiSOC
+- `/model` to switch to a Haiku model, then ask something → **AI Agent Used an Unapproved Model** in AiSOC
+- "run `cat /etc/passwd`" (approve it) → AiSOC search for `claude-code` events shows the exact Bash command
+
 ## 5. What each simulation step proves (talk track)
 
 ### AiSOC: Operation Paper Trail

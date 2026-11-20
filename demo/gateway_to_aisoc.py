@@ -10,6 +10,11 @@ Two sources, two AiSOC connector types:
   gateway access log (GET /api/v1/analytics/logs, needs the analytics profile)
     every tools/call (allowed or refused) ... ai_runtime telemetry; no alert by itself
 
+  gateway LLM log (GET /api/v1/analytics/llm-logs)
+    every model call (Claude Code, SDKs) .... ai_runtime telemetry: model, tokens, cost
+    a model outside APPROVED_MODELS ......... the same event, marked finding_type
+                                              "unapproved_model" (AiSOC rule below)
+
   gateway container log (docker), because a request with a bad key has no
   tenant and so never reaches the access log
     "authentication failed" / "authentication rate limited" ... one ai_guardrail
@@ -19,6 +24,8 @@ The detections are AiSOC's own, reading the ai_runtime fields:
   * det-application-086  "AI Agent Tool Call Denied" (low, T1078): every refusal
   * wd-ai-agent-tool-denials  "AI agent repeatedly denied a tool call" (high, T1078):
     one agent refused 10+ times within 5 minutes
+  * det-application-082  "AI Agent Used an Unapproved Model" (medium): only when
+    APPROVED_MODELS is set (comma-separated prefixes, e.g. claude-sonnet,claude-opus)
   Alerts are then correlated per agent and triaged by AiSOC's AI like any other.
 
 Usage (from the ai-agent-gateway folder):
@@ -52,6 +59,7 @@ ADMIN_KEY = os.environ.get("GATEWAY_ADMIN_KEY", "").strip()
 INGEST_TOKEN = os.environ.get("AISOC_INGEST_TOKEN", "").strip()
 GATEWAY_HOST = os.environ.get("GATEWAY_NAME", "tuskira-ai-gateway")
 CONNECTOR_ID = "tuskira-ai-gateway"
+APPROVED_MODELS = [m.strip() for m in os.environ.get("APPROVED_MODELS", "").split(",") if m.strip()]
 
 # Only calls that DO something are telemetry; handshakes and listings are noise.
 ACTION_METHODS = {"tools/call", "prompts/get", "resources/read"}
@@ -132,6 +140,70 @@ def fetch_access_logs(since: datetime) -> list[dict]:
         offset += 500
     rows.sort(key=lambda r: str(r.get("timestamp", "")))
     return rows
+
+
+def fetch_llm_logs(since: datetime) -> list[dict]:
+    """Every model call from `since` on, oldest first (Postgres fallback works without ClickHouse)."""
+    rows: list[dict] = []
+    offset = 0
+    while True:
+        q = urllib.parse.urlencode({"from": _iso(since), "limit": 500, "offset": offset})
+        status, body = _http("GET", f"{GATEWAY_API}/analytics/llm-logs?{q}", token=ADMIN_KEY)
+        if status != 200:
+            print(f"  ! gateway llm-logs: HTTP {status} {body[:160]}", file=sys.stderr)
+            return rows
+        page = json.loads(body).get("items") or []
+        rows.extend(page)
+        if len(page) < 500:
+            break
+        offset += 500
+    rows.sort(key=lambda r: str(r.get("timestamp", "")))
+    return rows
+
+
+def _approved(model: str) -> bool:
+    return not APPROVED_MODELS or any(model.startswith(p) for p in APPROVED_MODELS)
+
+
+def llm_to_aisoc(rows: list[dict], key_names: dict[str, str]) -> list[dict]:
+    """LLM-log rows -> ai_runtime events (model calls made through the gateway)."""
+    out = []
+    for r in rows:
+        key_id = str(r.get("key_id") or "")
+        agent = key_names.get(key_id) or r.get("principal") or "unknown-agent"
+        model = str(r.get("resolved_model") or r.get("model") or r.get("requested_model") or "")
+        status = int(r.get("status_code") or 0)
+        rid = str(r.get("request_id") or "")
+        ev = {
+            "timestamp": r.get("timestamp"),
+            "external_id": f"gw-llm-{rid}",
+            "request_id": rid,
+            "event_type": "ai_model_call",
+            "agent_id": agent,
+            "agent_name": r.get("profile") or agent,
+            "client_name": r.get("client_name") or "",
+            "user_agent": r.get("user_agent") or "",
+            "on_behalf_of": r.get("user") or "",
+            "model": model,
+            "provider": r.get("provider") or r.get("resolved_vendor") or "",
+            "input_tokens": r.get("input_tokens"),
+            "output_tokens": r.get("output_tokens"),
+            "cost_usd": r.get("cost_usd"),
+            "http_status": status,
+            "outcome": "success" if 200 <= status < 300 else ("denied" if status in (401, 403) else "error"),
+            "session_id": r.get("session_id") or "",
+            "source_ip": r.get("client_ip") or "",
+            "src_ip": r.get("client_ip") or "",
+            "hostname": GATEWAY_HOST,
+            "host": GATEWAY_HOST,
+            "latency_ms": r.get("duration_ms"),
+            "severity": "info",
+        }
+        if model and not _approved(model):
+            ev["finding_type"] = "unapproved_model"
+            ev["finding_reason"] = f"model {model} is not in APPROVED_MODELS ({', '.join(APPROVED_MODELS)})"
+        out.append(ev)
+    return out
 
 
 def fetch_auth_failures(since: datetime) -> tuple[int, int, str]:
@@ -301,6 +373,8 @@ def main() -> int:
         # land after a later one was already read. request_id keeps it exactly-once.
         rows = [r for r in fetch_access_logs(since - timedelta(seconds=60)) if str(r.get("request_id")) not in seen_set]
         runtime = to_aisoc(rows, key_names, conn_names)
+        llm_rows = [r for r in fetch_llm_logs(since - timedelta(seconds=60)) if f"llm-{r.get('request_id')}" not in seen_set]
+        runtime += llm_to_aisoc(llm_rows, key_names)
         findings: list[dict] = []
         if not args.no_docker_logs:
             f = auth_finding(*fetch_auth_failures(auth_since))
@@ -310,23 +384,28 @@ def main() -> int:
 
         ok = send("ai_runtime", runtime, dry_run=args.dry_run) and send("ai_guardrail", findings, dry_run=args.dry_run)
         if ok:
-            for r in rows:
-                rid = str(r.get("request_id"))
+            for rid in [str(r.get("request_id")) for r in rows] + [f"llm-{r.get('request_id')}" for r in llm_rows]:
                 if len(seen) == seen.maxlen:
                     seen_set.discard(seen[0])
                 seen.append(rid)
                 seen_set.add(rid)
-            if rows:
-                latest = max((_parse_ts(str(r.get("timestamp", ""))) for r in rows), default=None, key=lambda t: t or since)
+            if rows or llm_rows:
+                stamps = (_parse_ts(str(r.get("timestamp", ""))) for r in rows + llm_rows)
+                latest = max(stamps, default=None, key=lambda t: t or since)
                 since = max(since, latest or since)
             totals["runtime"] += len(runtime)
             totals["findings"] += len(findings)
             if runtime or findings:
-                denied = sum(1 for e in runtime if e["outcome"] == "denied")
+                tools = [e for e in runtime if e["event_type"] == "ai_tool_call"]
+                models = [e for e in runtime if e["event_type"] == "ai_model_call"]
+                denied = sum(1 for e in tools if e["outcome"] == "denied")
                 print(
-                    f"{datetime.now().strftime('%H:%M:%S')}  sent {len(runtime)} tool call(s) ({denied} refused) "
-                    f"and {len(findings)} finding(s) to AiSOC"
+                    f"{datetime.now().strftime('%H:%M:%S')}  sent {len(tools)} tool call(s) ({denied} refused), "
+                    f"{len(models)} model call(s) and {len(findings)} finding(s) to AiSOC"
                 )
+                for e in models:
+                    if e.get("finding_type") == "unapproved_model":
+                        print(f"           [UNAPPROVED MODEL] {e['agent_id']} used {e['model']}")
                 for f in findings:
                     print(f"           [{f['severity'].upper():6}] {f['title']}")
         if args.once:

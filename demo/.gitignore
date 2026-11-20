@@ -1,1 +1,2 @@
-demo/.toolserver.*
+.toolserver.*
+claude-code.env

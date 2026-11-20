@@ -25,6 +25,9 @@
 #   ./demo/attack_sim.sh                 # everything
 #   ./demo/attack_sim.sh --skip-lockout  # skip step 9 (it locks this IP out of the MCP plane for 30s)
 #   ./demo/attack_sim.sh --pause         # wait for Enter between steps (for presenting live)
+#   ./demo/attack_sim.sh --burst         # step 4 repeats the forbidden call 12 times, so AiSOC's
+#                                        # "AI agent repeatedly denied a tool call" rule fires
+#                                        # (run demo/run_bridge.sh to stream these into AiSOC)
 #
 # Needs: docker compose, curl, jq, node/npx.
 set -euo pipefail
@@ -45,10 +48,12 @@ fi
 
 SKIP_LOCKOUT=false
 PAUSE=false
+BURST=false
 for arg in "$@"; do
   case "$arg" in
     --skip-lockout) SKIP_LOCKOUT=true ;;
     --pause) PAUSE=true ;;
+    --burst) BURST=true ;;
     -h|--help) sed -n '2,32p' "$0"; exit 0 ;;
     *) echo "unknown option: $arg" >&2; exit 1 ;;
   esac
@@ -231,6 +236,15 @@ mcp "$BOT_KEY" "" tools/list
 note "what support-bot can see: $(jq -r '[.result.tools[]?.name] | join(", ")' <<<"$MCP_BODY")"
 mcp "$BOT_KEY" "" tools/call '{"name":"everything__echo","arguments":{"message":"hello from support-bot"}}'
 note "its allowed tool still works: $(jq -r '.result.content[0].text // .error.message' <<<"$MCP_BODY")"
+if [[ "$BURST" == true ]]; then
+  attack "keeps probing: 12 more get-env attempts in a row (a hijacked agent rarely stops at one)"
+  refused=0
+  for _ in $(seq 1 12); do
+    mcp "$BOT_KEY" "" tools/call '{"name":"everything__get-env","arguments":{}}'
+    [[ "$(jq -r '.error.code // empty' <<<"$MCP_BODY")" == "-32003" ]] && refused=$((refused + 1))
+  done
+  if [[ "$refused" == 12 ]]; then held "all 12 refused (-32003); AiSOC's rule wd-ai-agent-tool-denials fires at 10 in 5 min"; else broke "only $refused of 12 refused"; fi
+fi
 pause
 
 # ---------------------------------------------------------------------------

@@ -102,6 +102,32 @@ Step 9 (brute force) deliberately locks your IP out of the MCP plane for 30 s. R
 
 Then in the console: **Access Logs** (every attempt with key, tool, profile and result), **API Keys** (support-bot bound to its profile), **Profiles**.
 
+## 4b. Connect the gateway to AiSOC (gateway logs become SOC alerts)
+
+`demo/gateway_to_aisoc.py` (in the ai-agent-gateway repo) reads the gateway's access log and container log and pushes them into AiSOC's ingest API as AI-agent telemetry. AiSOC's **own** rules then raise the alerts:
+
+| Gateway sees | Sent to AiSOC as | AiSOC alert |
+|---|---|---|
+| Any tool call, allowed or refused | `ai_runtime` event (agent, tool, server, outcome) | none for allowed calls |
+| A refused tool call (-32003) | the same, with `outcome: denied` | **AI Agent Tool Call Denied** (`det-application-086`, low, T1078), one per refusal |
+| One agent refused 10+ times in 5 minutes | (the same events, counted) | **AI agent repeatedly denied a tool call** (`wd-ai-agent-tool-denials`, high, T1078) |
+| Bad API keys / brute-force lockout (container log) | `ai_guardrail` finding | **AI Agent Gateway locked out a client after repeated invalid API keys** (high, T1110) |
+
+Run it in a **third terminal** in the codespace (both stacks up, gateway with the analytics profile):
+
+```bash
+cd /workspaces/ai-agent-gateway
+./demo/run_bridge.sh          # mints both credentials, then streams every 10 s; leave it running
+```
+
+Then, in the gateway terminal, run the attacks with the burst option so the high-severity rule trips:
+
+```bash
+./demo/attack_sim.sh --burst
+```
+
+Within about a minute the bridge prints what it sent, and AiSOC's **Alerts** page shows the gateway alerts (source: AI Runtime / AI Guardrail), grouped per agent and triaged by the AI like any other alert. SSRF attempts (step 7) are refused on the gateway's control plane and are not in the access log, so they are not forwarded.
+
 ## 5. What each simulation step proves (talk track)
 
 ### AiSOC: Operation Paper Trail

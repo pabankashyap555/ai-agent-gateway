@@ -20,6 +20,8 @@
 #
 # Run from the ai-agent-gateway folder, with both stacks up:
 #   ./demo/setup_claude_code.sh
+# Or, with only the gateway up (guardrails, no AiSOC yet; skips step 4):
+#   ./demo/setup_claude_code.sh --gateway-only
 # Needs: docker, curl, jq, npx; the AiSOC checkout at $AISOC_DIR (default /workspaces/AiSOC).
 set -euo pipefail
 
@@ -33,6 +35,8 @@ LLM_URL="http://localhost:${GW_LLM_PORT:-18082}"
 TOOLSRV_PORT="${TOOLSRV_PORT:-23014}"
 PROFILE_NAME="claude-code"
 GW=(docker compose -f deploy/docker-compose.yml -f demo/docker-compose.demo-ports.yml)
+GATEWAY_ONLY=false
+[[ "${1:-}" == "--gateway-only" ]] && GATEWAY_ONLY=true
 
 say()  { echo; echo "== $* =="; }
 note() { echo "   $*"; }
@@ -40,8 +44,10 @@ die()  { echo "ERROR: $*" >&2; exit 1; }
 
 for c in docker curl jq npx; do command -v "$c" >/dev/null || die "'$c' is required"; done
 curl -sf "$API/health" >/dev/null || die "the gateway is not answering on $API (start it first)"
-[[ -d "$AISOC_DIR" ]] || die "AiSOC not found at $AISOC_DIR (set AISOC_DIR)"
-[[ -f "$AISOC_DIR/demo/docker-compose.otlp.yml" ]] || die "$AISOC_DIR is missing demo/docker-compose.otlp.yml: run 'git pull' there first"
+if [[ "$GATEWAY_ONLY" == false ]]; then
+  [[ -d "$AISOC_DIR" ]] || die "AiSOC not found at $AISOC_DIR (set AISOC_DIR, or use --gateway-only)"
+  [[ -f "$AISOC_DIR/demo/docker-compose.otlp.yml" ]] || die "$AISOC_DIR is missing demo/docker-compose.otlp.yml: run 'git pull' there first"
+fi
 
 api() {  # api <method> <path> [json]  -> API_HTTP, API_BODY
   local args=(-sS -X "$1" -H "Authorization: Bearer $GATEWAY_ADMIN_KEY" -w '\n%{http_code}')
@@ -104,24 +110,29 @@ claude mcp add --transport http --scope user tusk-ai-gateway "$MCP_URL" \
 note "registered: tusk-ai-gateway -> $MCP_URL (check with: claude mcp list)"
 
 # ---------------------------------------------------------------------------
-say "4. AiSOC: switch on the OpenTelemetry logs receiver and mint a token for it"
-AISOC=(docker compose -f docker-compose.yml)
-[[ -f "$AISOC_DIR/docker-compose.ports.yml" ]] && AISOC+=(-f docker-compose.ports.yml)
-AISOC+=(-f demo/docker-compose.otlp.yml)
-(cd "$AISOC_DIR" && "${AISOC[@]}" up -d --no-deps ingest-worker >/dev/null 2>&1)
-ingest_port="$(cd "$AISOC_DIR" && "${AISOC[@]}" port ingest-worker 8080 2>/dev/null | sed -E 's/.*:([0-9]+)$/\1/' || true)"
-INGEST="http://localhost:${ingest_port:-8081}"
-for _ in $(seq 1 60); do curl -sf "$INGEST/health" >/dev/null && break; sleep 2; done
-curl -sf "$INGEST/health" >/dev/null || die "AiSOC ingest did not come back on $INGEST"
-AISOC_API_TOKEN="$(cd "$AISOC_DIR" && "${AISOC[@]}" run --rm -T api python -m app.scripts.mint_api_token --quiet)"
-out="$(curl -sS -X POST "http://localhost:8000/api/v1/inbox/tokens" \
-  -H "Authorization: Bearer $AISOC_API_TOKEN" -H 'Content-Type: application/json' \
-  -d '{"template_id": "otlp-logs", "label": "claude-code"}')"
-OTLP_TOKEN="$(jq -r '.token // empty' <<<"$out")"
-[[ -n "$OTLP_TOKEN" ]] || die "could not mint an otlp-logs token: $out"
-code="$(curl -s -o /dev/null -w '%{http_code}' -X POST "$INGEST/v1/logs" -H "X-Inbox-Token: $OTLP_TOKEN" \
-  -H 'Content-Type: application/json' -d '{"resourceLogs":[]}')"
-note "receiver on $INGEST/v1/logs answered HTTP $code to an empty test batch"
+if [[ "$GATEWAY_ONLY" == false ]]; then
+  say "4. AiSOC: switch on the OpenTelemetry logs receiver and mint a token for it"
+  AISOC=(docker compose -f docker-compose.yml)
+  [[ -f "$AISOC_DIR/docker-compose.ports.yml" ]] && AISOC+=(-f docker-compose.ports.yml)
+  AISOC+=(-f demo/docker-compose.otlp.yml)
+  (cd "$AISOC_DIR" && "${AISOC[@]}" up -d --no-deps ingest-worker >/dev/null 2>&1)
+  ingest_port="$(cd "$AISOC_DIR" && "${AISOC[@]}" port ingest-worker 8080 2>/dev/null | sed -E 's/.*:([0-9]+)$/\1/' || true)"
+  INGEST="http://localhost:${ingest_port:-8081}"
+  for _ in $(seq 1 60); do curl -sf "$INGEST/health" >/dev/null && break; sleep 2; done
+  curl -sf "$INGEST/health" >/dev/null || die "AiSOC ingest did not come back on $INGEST"
+  AISOC_API_TOKEN="$(cd "$AISOC_DIR" && "${AISOC[@]}" run --rm -T api python -m app.scripts.mint_api_token --quiet)"
+  out="$(curl -sS -X POST "http://localhost:8000/api/v1/inbox/tokens" \
+    -H "Authorization: Bearer $AISOC_API_TOKEN" -H 'Content-Type: application/json' \
+    -d '{"template_id": "otlp-logs", "label": "claude-code"}')"
+  OTLP_TOKEN="$(jq -r '.token // empty' <<<"$out")"
+  [[ -n "$OTLP_TOKEN" ]] || die "could not mint an otlp-logs token: $out"
+  code="$(curl -s -o /dev/null -w '%{http_code}' -X POST "$INGEST/v1/logs" -H "X-Inbox-Token: $OTLP_TOKEN" \
+    -H 'Content-Type: application/json' -d '{"resourceLogs":[]}')"
+  note "receiver on $INGEST/v1/logs answered HTTP $code to an empty test batch"
+
+else
+  say "4. AiSOC: skipped (--gateway-only)"
+fi
 
 # ---------------------------------------------------------------------------
 say "5. Writing demo/claude-code.env"
@@ -134,6 +145,9 @@ cat >"$ROOT_DIR/demo/claude-code.env" <<ENV
 export ANTHROPIC_BASE_URL="${LLM_URL}"
 export ANTHROPIC_CUSTOM_HEADERS="X-Gateway-Key: ${CC_KEY}"
 
+ENV
+if [[ "$GATEWAY_ONLY" == false ]]; then
+  cat >>"$ROOT_DIR/demo/claude-code.env" <<ENV
 # Claude Code's own telemetry -> AiSOC's OTLP logs receiver.
 export CLAUDE_CODE_ENABLE_TELEMETRY=1
 export OTEL_LOGS_EXPORTER=otlp
@@ -147,10 +161,13 @@ export OTEL_LOG_USER_PROMPTS=1             # include prompt text (demo only; off
 export OTEL_SERVICE_NAME=claude-code
 export OTEL_RESOURCE_ATTRIBUTES="host.name=$(hostname)"
 ENV
+fi
 note "done"
 
 echo
 echo "Next:"
-echo "  1. Keep the bridge running in its own terminal:   APPROVED_MODELS=claude-sonnet,claude-opus ./demo/run_bridge.sh"
-echo "  2. In this terminal:                               source demo/claude-code.env && claude"
-echo "     (first time: Claude Code asks you to log in with your Claude account or an API key)"
+echo "  1. Log in once (copy-paste login that works in Codespaces):   BROWSER=true claude auth login"
+echo "  2. Start Claude Code through the gateway:                     source demo/claude-code.env && claude"
+if [[ "$GATEWAY_ONLY" == false ]]; then
+  echo "  3. Keep the bridge running in its own terminal:  APPROVED_MODELS=claude-sonnet,claude-opus ./demo/run_bridge.sh"
+fi

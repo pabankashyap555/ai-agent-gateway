@@ -60,6 +60,7 @@ INGEST_TOKEN = os.environ.get("AISOC_INGEST_TOKEN", "").strip()
 GATEWAY_HOST = os.environ.get("GATEWAY_NAME", "tuskira-ai-gateway")
 CONNECTOR_ID = "tuskira-ai-gateway"
 APPROVED_MODELS = [m.strip() for m in os.environ.get("APPROVED_MODELS", "").split(",") if m.strip()]
+_WARNED = {"access": False}
 
 # Only calls that DO something are telemetry; handshakes and listings are noise.
 ACTION_METHODS = {"tools/call", "prompts/get", "resources/read"}
@@ -124,11 +125,15 @@ def fetch_access_logs(since: datetime) -> list[dict]:
         q = urllib.parse.urlencode({"from": _iso(since), "limit": 500, "offset": offset})
         status, body = _http("GET", f"{GATEWAY_API}/analytics/logs?{q}", token=ADMIN_KEY)
         if status == 404:
-            raise SystemExit(
-                "The gateway's access-log API answered 404: it needs ClickHouse. Start the gateway with\n"
-                "  GATEWAY_SINKS_CLICKHOUSE_ENABLED=true docker compose -f deploy/docker-compose.yml "
-                "-f demo/docker-compose.demo-ports.yml --profile analytics up -d"
-            )
+            # No ClickHouse: tool calls are unavailable, model calls (Postgres) still flow.
+            if not _WARNED["access"]:
+                print(
+                    "  ! gateway tool-call log unavailable (needs the analytics profile / ClickHouse); "
+                    "forwarding model calls only",
+                    file=sys.stderr,
+                )
+                _WARNED["access"] = True
+            return []
         if status in (401, 403):
             raise SystemExit("The gateway refused GATEWAY_ADMIN_KEY. Unset it and run demo/run_bridge.sh to mint one.")
         if status != 200:
@@ -409,7 +414,7 @@ def main() -> int:
                 for f in findings:
                     print(f"           [{f['severity'].upper():6}] {f['title']}")
         if args.once:
-            print(f"Done: {totals['runtime']} tool calls, {totals['findings']} findings.")
+            print(f"Done: {totals['runtime']} event(s), {totals['findings']} finding(s).")
             return 0 if ok else 1
         time.sleep(args.interval)
 

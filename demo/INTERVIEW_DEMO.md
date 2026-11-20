@@ -38,6 +38,19 @@ make smoke      # pushes one real event through the pipeline: expect "PASS: 10/1
 
 Console: **http://localhost:3000**. Sign in with `admin` and the printed password.
 
+### 2b. Laptop with 8 GB RAM? Run AiSOC in GitHub Codespaces instead
+
+AiSOC's repo ships a Codespaces setup that automatically picks a 4-core / 16 GB cloud machine. A free GitHub account includes 120 core-hours a month, which is about 30 hours on that machine. The default spending limit is $0, so it stops rather than charges you.
+
+1. Open https://github.com/pabankashyap555/AiSOC, click the green **Code** button, then the **Codespaces** tab, then **Create codespace on main**. It opens VS Code in your browser (first start takes a few minutes).
+2. In its terminal (bottom panel) run `make up`. Save the admin password it prints.
+3. Run `make smoke` and expect `PASS: 10/10 stages`.
+4. Open the **Ports** tab (next to Terminal), find port **3000**, and click the globe icon to open the console.
+5. Run the simulation in the same terminal: `./demo/run_attack_sim.sh --pause 20`
+6. **Stop the codespace when you finish** so it doesn't use up your hours: github.com/codespaces, then `...` next to it, then **Stop codespace**. It also stops by itself after 30 minutes idle. Stopping keeps everything; next time click it to resume and run `make up` again (fast, as the images are already downloaded).
+
+The gateway still runs on your laptop (it needs only 1–2 GB): follow section 3 inside your WSL Ubuntu terminal.
+
 ## 3. Install the AI Agent Gateway (≈ 5 min)
 
 ```bash

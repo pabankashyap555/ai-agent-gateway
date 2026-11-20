@@ -138,6 +138,8 @@ Two paths, because the gateway only sees what passes through it:
 | Calls the model | Gateway LLM plane (`:18082`, `ANTHROPIC_BASE_URL`) → bridge | `ai_runtime` model call (model, tokens, cost, session) | With `APPROVED_MODELS` set: **AI Agent Used an Unapproved Model** (`det-application-082`) |
 | Runs Bash, reads or edits files (built-in tools, never touch the gateway) | Claude Code's own OpenTelemetry events → AiSOC OTLP receiver (`:8081/v1/logs`) | Process Activity events (`tool_result`, `tool_decision`, `user_prompt`, `api_request`), searchable | None out of the box: AiSOC has no rule for Claude Code's event fields yet |
 
+**Simplest version (no gateway needed):** from the AiSOC folder run `./demo/claude_code_to_aisoc.sh`, then `BROWSER=true claude auth login` (open the *printed* link, authorise, paste the code shown back into the terminal; this avoids the `localhost` redirect that fails in Codespaces), then `source demo/claude-code.env && claude`. Run AiSOC with `make up-full` to browse the events in Hunt.
+
 AiSOC's receiver takes OpenTelemetry **logs**, not traces, so Claude Code's (beta) traces are not sent.
 
 ```bash

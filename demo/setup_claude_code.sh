@@ -108,7 +108,7 @@ say "4. AiSOC: switch on the OpenTelemetry logs receiver and mint a token for it
 AISOC=(docker compose -f docker-compose.yml)
 [[ -f "$AISOC_DIR/docker-compose.ports.yml" ]] && AISOC+=(-f docker-compose.ports.yml)
 AISOC+=(-f demo/docker-compose.otlp.yml)
-(cd "$AISOC_DIR" && "${AISOC[@]}" up -d ingest-worker >/dev/null 2>&1)
+(cd "$AISOC_DIR" && "${AISOC[@]}" up -d --no-deps ingest-worker >/dev/null 2>&1)
 ingest_port="$(cd "$AISOC_DIR" && "${AISOC[@]}" port ingest-worker 8080 2>/dev/null | sed -E 's/.*:([0-9]+)$/\1/' || true)"
 INGEST="http://localhost:${ingest_port:-8081}"
 for _ in $(seq 1 60); do curl -sf "$INGEST/health" >/dev/null && break; sleep 2; done

@@ -149,11 +149,11 @@ source demo/claude-code.env && claude                # first run: log in with yo
 ```
 
 Things to ask Claude Code, and where each shows up:
-- "Use the echo tool to say hello" → gateway Access Logs, then AiSOC (allowed tool call)
+- "Use the echo tool to say hello" → gateway Access Logs; reaches AiSOC as an event (allowed calls are not alerts, so they are only browsable with the event lake: `make up-full`)
 - "Use the get-env tool" → Claude Code can't even see it (the profile hides it); `claude mcp list` / `/mcp` shows only echo and get-sum
 - any question at all → gateway LLM Logs (tokens, cost), then AiSOC
 - `/model` to switch to a Haiku model, then ask something → **AI Agent Used an Unapproved Model** in AiSOC
-- "run `cat /etc/passwd`" (approve it) → AiSOC search for `claude-code` events shows the exact Bash command
+- "run `cat /etc/passwd`" (approve it) → with the event lake on (`make up-full`, ~12 GB), Hunt or Explore shows the exact Bash command; on the default `make up` the event is received but not browsable
 
 ## 5. What each simulation step proves (talk track)
 

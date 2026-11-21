@@ -157,6 +157,32 @@ Things to ask Claude Code, and where each shows up:
 - `/model` to switch to a Haiku model, then ask something → **AI Agent Used an Unapproved Model** in AiSOC
 - "run `cat /etc/passwd`" (approve it) → with the event lake on (`make up-full`, ~12 GB), Hunt or Explore shows the exact Bash command; on the default `make up` the event is received but not browsable
 
+## 4d. Attack: a hard-coded secret reaches the AI model
+
+What happens when Claude Code reads code with a plain-text credential in it:
+
+| Layer | What it does | What you see |
+|---|---|---|
+| AI Agent Gateway | **Does not block.** Forwards the request to the model unchanged; its secret redaction scrubs only its own stored copy (`[REDACTED:aws_key_id]`), with `GATEWAY_LLM_PROXY_CAPTURE_STORE_BODIES=true` (on in the demo overlay) | Gateway console, LLM Logs: the stored prompt shows `[REDACTED:...]` |
+| Bridge | Reads those markers, once per session and kind | `[SECRET IN PROMPT] claude-code: aws_key_id, aws_secret` |
+| AiSOC | Rule `det-application-085` | Alert **Credential Material Present in an AI Prompt** (high) |
+
+Use fake values only, in a scratch folder that is never committed (GitHub's secret scanning flags AWS-shaped keys):
+
+```bash
+mkdir -p /workspaces/demo-app && cd /workspaces/demo-app
+cat > leaky_app.py <<'PY'
+# FAKE demo credentials - not real
+AWS_ACCESS_KEY_ID = "AKIAZ7QX3PL9DEMO4KEY"
+AWS_SECRET_ACCESS_KEY = "wJalrXUtnFEMI/K7MDENG/bPxRfiCYDEMOKEY123"
+OPENAI_API_KEY = "sk-demoFAKE1234567890abcdefghij"
+PY
+source /workspaces/ai-agent-gateway/demo/claude-code.env && claude
+# then ask: Review leaky_app.py and explain what it does
+```
+
+Talking point: the gateway *detects and keeps its own records clean* but does not stop the secret leaving; the fix is a blocking policy (or the detection agent with an engine), and AiSOC is what turns the gateway's evidence into an alert a human acts on.
+
 ## 5. What each simulation step proves (talk track)
 
 ### AiSOC: Operation Paper Trail

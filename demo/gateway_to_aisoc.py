@@ -26,6 +26,10 @@ The detections are AiSOC's own, reading the ai_runtime fields:
     one agent refused 10+ times within 5 minutes
   * det-application-082  "AI Agent Used an Unapproved Model" (medium): only when
     APPROVED_MODELS is set (comma-separated prefixes, e.g. claude-sonnet,claude-opus)
+  * det-application-085  "Credential Material Present in an AI Prompt" (high): the
+    gateway's secret redaction replaced a credential in its stored copy of a model
+    call with [REDACTED:<kind>] (needs GATEWAY_LLM_PROXY_CAPTURE_STORE_BODIES=true);
+    reported once per session and kind
   Alerts are then correlated per agent and triaged by AiSOC's AI like any other.
 
 Usage (from the ai-agent-gateway folder):
@@ -61,6 +65,12 @@ GATEWAY_HOST = os.environ.get("GATEWAY_NAME", "tuskira-ai-gateway")
 CONNECTOR_ID = "tuskira-ai-gateway"
 APPROVED_MODELS = [m.strip() for m in os.environ.get("APPROVED_MODELS", "").split(",") if m.strip()]
 _WARNED = {"access": False}
+
+# Gateway redaction kinds (docs/llm-plane.md#secret-redaction) -> the kinds AiSOC's
+# rule det-application-085 knows. Kinds with no AiSOC equivalent keep their own name.
+_SECRET_KIND_MAP = {"aws_key_id": "aws_access_key", "aws_secret": "aws_access_key", "api_key": "openai_key", "private_key": "private_key"}
+_REDACTED = re.compile(r"\[REDACTED:([a-z_]+)\]")
+_SEEN_SECRETS: set[tuple[str, str]] = set()
 
 # Only calls that DO something are telemetry; handshakes and listings are noise.
 ACTION_METHODS = {"tools/call", "prompts/get", "resources/read"}
@@ -166,6 +176,30 @@ def fetch_llm_logs(since: datetime) -> list[dict]:
     return rows
 
 
+def _decode(v: object) -> str:
+    """A body field as text: Go encodes []byte as base64 in JSON."""
+    if not isinstance(v, str) or not v:
+        return ""
+    try:
+        import base64
+
+        return base64.b64decode(v, validate=True).decode("utf-8", "replace")
+    except ValueError:
+        return v
+
+
+def redacted_kinds(request_id: str) -> list[str]:
+    """Secret kinds the gateway redacted from this call's stored prompt (empty if none or no bodies)."""
+    if not request_id:
+        return []
+    status, body = _http("GET", f"{GATEWAY_API}/analytics/llm-logs/{urllib.parse.quote(request_id)}", token=ADMIN_KEY)
+    if status != 200:
+        return []
+    rec = json.loads(body)
+    text = " ".join(_decode(rec.get(k)) for k in ("request_body", "messages", "system"))
+    return sorted(set(_REDACTED.findall(text)))
+
+
 def _approved(model: str) -> bool:
     return not APPROVED_MODELS or any(model.startswith(p) for p in APPROVED_MODELS)
 
@@ -204,6 +238,13 @@ def llm_to_aisoc(rows: list[dict], key_names: dict[str, str]) -> list[dict]:
             "latency_ms": r.get("duration_ms"),
             "severity": "info",
         }
+        gw_kinds = redacted_kinds(rid)
+        session = str(r.get("session_id") or rid)
+        new_kinds = [k for k in gw_kinds if (session, k) not in _SEEN_SECRETS]
+        if new_kinds:
+            _SEEN_SECRETS.update((session, k) for k in new_kinds)
+            ev["prompt_secret_kinds"] = sorted({_SECRET_KIND_MAP.get(k, k) for k in new_kinds})
+            ev["gateway_redaction_kinds"] = new_kinds
         if model and not _approved(model):
             ev["finding_type"] = "unapproved_model"
             ev["finding_reason"] = f"model {model} is not in APPROVED_MODELS ({', '.join(APPROVED_MODELS)})"
@@ -409,6 +450,9 @@ def main() -> int:
                     f"{len(models)} model call(s) and {len(findings)} finding(s) to AiSOC"
                 )
                 for e in models:
+                    if e.get("prompt_secret_kinds"):
+                        kinds = ", ".join(e["gateway_redaction_kinds"])
+                        print(f"           [SECRET IN PROMPT] {e['agent_id']}: {kinds} (gateway redacted its copy)")
                     if e.get("finding_type") == "unapproved_model":
                         print(f"           [UNAPPROVED MODEL] {e['agent_id']} used {e['model']}")
                 for f in findings:

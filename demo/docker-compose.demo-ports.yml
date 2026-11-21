@@ -10,7 +10,8 @@
 #   LLM plane      http://localhost:18082
 #   Adminer        http://localhost:18090  (analytics profile only)
 #
-# It also shortens the failed-auth lockout from 5 minutes to 30 seconds, so
+# It also turns on model-call body capture (for secret detection, see below) and
+# shortens the failed-auth lockout from 5 minutes to 30 seconds, so
 # the brute-force step in demo/attack_sim.sh does not lock you out of your
 # own demo for long. Everything else is the shipped default.
 #
@@ -28,6 +29,11 @@ services:
       - "127.0.0.1:18082:8082" # llm plane
     environment:
       GATEWAY_AUTH_RATE_LIMIT_LOCKOUT: 30s
+      # Keep a copy of each model call. Its secret redaction (on by default) replaces
+      # credential-shaped strings in that stored copy with [REDACTED:<kind>]; the
+      # bridge (demo/gateway_to_aisoc.py) reports those to AiSOC. The call itself is
+      # still forwarded unchanged: this detects, it does not block.
+      GATEWAY_LLM_PROXY_CAPTURE_STORE_BODIES: "true"
 
   adminer:
     ports: !override

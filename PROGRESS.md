@@ -40,6 +40,48 @@ So nothing crashes, nothing turns red, and the bridge looks healthy.
   `claude-code.env` and AiSOC's `docker-compose.yml`.
 - Drew it by hand, added the missing labels, and uploaded the photo.
 
+## C0.2 – Events lost when a send to AiSOC fails
+
+> Honesty note: Claude helped me find these bugs and write the test.
+> I made the fix by hand and ran the test before and after it myself.
+
+The bridge keeps "bookmarks" so it doesn't send the same thing twice. The rule
+should be: only move a bookmark after AiSOC has accepted the send. I listed
+every bookmark the main loop changes (`since`, `seen`, `auth_since`,
+`_SEEN_SECRETS`). `since` and `seen` are only updated inside `if ok:`, so
+they're fine. The other two are not.
+
+### Bug 1 – failed logins are lost (arrows 8 → 5) — FIXED
+- **What:** `auth_since` ("I've checked failed logins up to here") was moved
+  forward before the send to AiSOC.
+- **Why:** the line sat outside `if ok:`. If AiSOC was down, the send failed
+  but the bookmark had already moved, so the next loop only read newer logs.
+- **SOC impact:** a brute-force attempt on the gateway can disappear. The
+  gateway still blocks it, but AiSOC never raises the alert, and an empty queue
+  looks like "no attack".
+- **Fix:** moved `auth_since = poll_started` inside `if ok:`. If the send fails,
+  the next loop re-reads the same window and sends it again.
+- **Proof:** `python3 demo/test_bridge_auth_cursor.py` fakes 3 failed logins and
+  makes AiSOC look down for one loop, then up. Before the fix it printed FAIL
+  (exit code 1). After the fix it printed PASS (exit code 0).
+
+### Bug 2 – secret-in-prompt alerts are lost (arrows 4 → 5) — NOT FIXED
+- **What:** `_SEEN_SECRETS` ("already warned about this secret") is updated
+  inside `llm_to_aisoc()`, while the event is being built, before it's sent.
+- **Why:** if AiSOC is down, the model call is retried next loop, but the
+  bridge thinks it already warned, so the retry goes out without the secret flag.
+- **SOC impact:** the "Credential Material Present in an AI Prompt" alert never
+  fires. The model call shows up looking normal, so nobody knows a leaked key
+  needs rotating.
+- **How I'd fix it:** collect the new (session, secret) pairs in
+  `llm_to_aisoc()` and add them to `_SEEN_SECRETS` only inside `if ok:`.
+
+### What didn't work
+- When I moved the line, I accidentally pasted an extra `for rid in ... ...`
+  line. I spotted it in the editor and removed it before running the test.
+- `git push` failed with 403 because the codespace token only had access to
+  AiSOC. I fixed it by logging in with `gh auth login`.
+- I got a merge conflict in PROGRESS.md and resolved it in the editor.
 
 
 ## C0.3 – Three decisions I'd defend

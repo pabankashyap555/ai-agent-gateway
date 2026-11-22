@@ -48,3 +48,34 @@ So nothing crashes, nothing turns red, and the bridge looks healthy.
   `claude-code.env` and AiSOC's `docker-compose.yml`.
 - Drew it by hand, added the missing labels, and uploaded the photo.
 
+
+
+## C0.3 – Three decisions I'd defend
+
+> Honesty note: my demo was built with AI help, so "my demo uses" below means
+> choices I ran and accepted, not code I wrote alone. The three ideas for
+> production are mine; Claude helped me check them against the real design.
+> None of the production changes are built yet.
+
+**1. A polling bridge.** My demo uses a small Python bridge that polls the gateway
+every 10 seconds and maps each log row into AiSOC's format, because the gateway
+can't push logs and AiSOC has no gateway connector. It costs up to 10 seconds of
+delay, one more script that can stop silently, mappings that break quietly if a
+field is renamed, and the lost-event bugs from C0.2. In production I'd have the
+gateway push events through OpenTelemetry into AiSOC, with a tested schema and a
+durable queue. (Not built yet.)
+
+**2. Storing prompt text.** My demo stores prompts in the gateway and sends
+Claude Code's prompt text to AiSOC, because AiSOC can only alert on a secret if
+the prompt is kept. It costs privacy: prompts, including any personal data, sit
+in two places. Only known secret patterns are masked, only in the gateway's copy;
+PII isn't masked, and the real secret still reaches the model. In production I'd
+mask or block secrets and PII at the gateway before forwarding, turn prompt
+logging off, and keep data briefly. (Not built yet.)
+
+**3. An admin key for the bridge.** My demo gives the bridge a full gateway admin
+key over plain HTTP, because it was the quickest key that could read logs. It
+costs a lot if the bridge machine is hacked: the attacker could create keys and
+change agent permissions, not just read logs. In production I'd give the bridge a
+read-only role, keep a short-lived key in a secrets manager, and use mutual TLS
+with a private CA that renews certificates automatically. (Not built yet.)

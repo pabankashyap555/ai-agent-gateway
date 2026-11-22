@@ -31,7 +31,7 @@ What the bridge does with that answer It prints one warning in its terminal, the
 
 So nothing crashes, nothing turns red, and the bridge looks healthy.
 
-- **(8) Bridge → docker logs:** The AI gateways does not store the failed authentication logs anywhere other than its own local docker container. When the bridge is trying to fetch those logs and lets say for some reason the call was unsuccessful then the gateway does not return any error to the bridge.
+- **(8) Bridge → docker logs:** The gateway only writes failed logins to its own Docker container log, so the bridge reads them with docker logs. If that command fails (wrong folder, no Docker access, timeout), the bridge hides the error and reports zero failed logins, so the brute-force alert never fires and nobody notices.
 
 
 ### What I did

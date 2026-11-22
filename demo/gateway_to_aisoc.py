@@ -426,10 +426,11 @@ def main() -> int:
             f = auth_finding(*fetch_auth_failures(auth_since))
             if f:
                 findings.append(f)
-            auth_since = poll_started
 
         ok = send("ai_runtime", runtime, dry_run=args.dry_run) and send("ai_guardrail", findings, dry_run=args.dry_run)
         if ok:
+            # Move the auth bookmark only after AiSOC accepted the finding.
+            auth_since = poll_started
             for rid in [str(r.get("request_id")) for r in rows] + [f"llm-{r.get('request_id')}" for r in llm_rows]:
                 if len(seen) == seen.maxlen:
                     seen_set.discard(seen[0])

@@ -12,7 +12,8 @@ In short: Claude Code sends its work down three paths. Tool calls and model call
 go through the gateway, which checks the key and the allowed tools. Its own local
 actions (Bash, file edits) go straight to AiSOC, because they never touch the gateway.
 The bridge copies the gateway's logs into AiSOC every 10 seconds. Inside AiSOC,
-events go ingest → Kafka → detection rules → alerts in Postgres.
+events go ingest → Kafka → detect
+ion rules → alerts in Postgres.
 
 ### Silent failures (circled on the diagram)
 
